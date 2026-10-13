@@ -985,10 +985,10 @@ fun CameraScreen(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .padding(top = 100.dp, bottom = 250.dp, start = 24.dp, end = 8.dp),
-                onIso = viewModel::setProIso,
-                onExposure = viewModel::setProExposure,
+                onIso = { v -> viewModel.setProIso(v, proRanges) },
+                onExposure = { ns -> viewModel.setProExposure(ns, proRanges) },
                 onWb = viewModel::setProWb,
-                onFocus = viewModel::setProFocus,
+                onFocus = { d -> viewModel.setProFocus(d, proRanges) },
                 onReset = viewModel::resetPro,
             )
         }

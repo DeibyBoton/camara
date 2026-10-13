@@ -32,14 +32,23 @@ class FrameMerger(
                 if (fx < 0 || fx >= width) continue
                 val i = rowRef + x
                 val p = pixels[rowFrame + fx]
-                val q = r[i]
-                val d = kotlin.math.abs(((p shr 16) and 0xFF) - ((q shr 16) and 0xFF)) +
-                        kotlin.math.abs(((p shr 8) and 0xFF) - ((q shr 8) and 0xFF)) +
-                        kotlin.math.abs((p and 0xFF) - (q and 0xFF))
+                val c = count[i].toInt()
+                val (qr, qg, qb) = if (c > 0) {
+                    Triple(sumR[i] / c, sumG[i] / c, sumB[i] / c)
+                } else {
+                    val q0 = r[i]
+                    Triple((q0 shr 16) and 0xFF, (q0 shr 8) and 0xFF, q0 and 0xFF)
+                }
+                val pr = (p shr 16) and 0xFF
+                val pg = (p shr 8) and 0xFF
+                val pb = p and 0xFF
+                val d = kotlin.math.abs(pr - qr) +
+                        kotlin.math.abs(pg - qg) +
+                        kotlin.math.abs(pb - qb)
                 if (frames > 1 && d > ghostThreshold) continue
-                sumR[i] += (p shr 16) and 0xFF
-                sumG[i] += (p shr 8) and 0xFF
-                sumB[i] += p and 0xFF
+                sumR[i] += pr
+                sumG[i] += pg
+                sumB[i] += pb
                 count[i]++
             }
         }
