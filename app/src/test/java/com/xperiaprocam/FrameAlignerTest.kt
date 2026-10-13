@@ -51,4 +51,13 @@ class FrameAlignerTest {
         val shift = FrameAligner().findShift(flat, flat, w, h)
         assertTrue(kotlin.math.abs(shift.dx) <= 5 && kotlin.math.abs(shift.dy) <= 5)
     }
+
+    @Test
+    fun flatNoisyImagesReturnZeroShift() {
+        val w = 256; val h = 192; val rnd = java.util.Random(1)
+        fun noisy() = IntArray(w * h) { val v = 100 + rnd.nextInt(5); (0xFF shl 24) or (v shl 16) or (v shl 8) or v }
+        val img = noisy()
+        val s = FrameAligner().findShift(img, img, w, h)
+        assertEquals(0, s.dx); assertEquals(0, s.dy)
+    }
 }

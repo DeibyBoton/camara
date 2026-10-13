@@ -22,7 +22,7 @@ class FrameMergerTest {
 
     @Test
     fun `two colors average channel-wise`() {
-        val m = FrameMerger(4, 4)
+        val m = FrameMerger(4, 4, ghostThreshold = 500)
         m.add(solid(4, 4, 0, 100, 200), 0, 0)
         m.add(solid(4, 4, 100, 100, 100), 0, 0)
         val px = m.result()
@@ -52,7 +52,7 @@ class FrameMergerTest {
 
     @Test
     fun `shifted frame contributes only inside bounds`() {
-        val m = FrameMerger(4, 4)
+        val m = FrameMerger(4, 4, ghostThreshold = 800)
         m.add(solid(4, 4, 0, 0, 0), 0, 0)          // reference: black
         m.add(solid(4, 4, 255, 255, 255), 2, 0)    // white, sampled at x+2
         val px = m.result()
@@ -63,5 +63,15 @@ class FrameMergerTest {
         assertEquals(0, red(2))
         assertEquals(0, red(3))
         assertEquals(0, red(4 * 4 - 1))
+    }
+
+    @Test
+    fun movingObjectInOneFrameLeavesNoGhost() {
+        val w = 8; val h = 8
+        val base = IntArray(w * h) { (0xFF shl 24) or (100 shl 16) or (100 shl 8) or 100 }
+        val withObj = base.copyOf().also { it[10] = (0xFF shl 24) or (255 shl 16) }
+        val m = FrameMerger(w, h)
+        m.add(base, 0, 0); m.add(withObj, 0, 0); m.add(base, 0, 0)
+        assertEquals(base[10], m.result()[10])
     }
 }

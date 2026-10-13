@@ -14,8 +14,8 @@ android {
         applicationId = "com.xperiaprocam"
         minSdk = 29
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 5
+        versionName = "0.3.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -43,7 +43,7 @@ android {
 }
 
 dependencies {
-    val camerax = "1.4.1"
+    val camerax = "1.5.0"
     val compose = "1.7.6"
     val hilt = "2.51.1"
 

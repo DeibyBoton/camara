@@ -137,8 +137,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import android.app.ActivityManager
+import android.content.Context
+import com.xperiaprocam.core.thermal.ThermalGuardian
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 /** WB presets using public Camera2 CONTROL_AWB_MODE values (null = auto). */
@@ -193,6 +198,8 @@ fun CameraScreen(
     var videoQuality by remember { mutableStateOf<Quality>(Quality.UHD) }
     var videoFps by remember { mutableStateOf(30) }
     val mainExecutor: Executor = remember { ContextCompat.getMainExecutor(context) }
+    val captureExecutor = remember { Executors.newSingleThreadExecutor() }
+    DisposableEffect(Unit) { onDispose { captureExecutor.shutdown() } }
     val manualResolver = remember { ManualExposureResolver(context) }
     val stability = remember { StabilityDetector(context) }
 
@@ -303,7 +310,30 @@ fun CameraScreen(
         }
     }
 
-    LaunchedEffect(ui.lensFacing, ui.mode, pro) { rebindCurrent() }
+    LaunchedEffect(ui.lensFacing, ui.mode) { rebindCurrent() }
+
+    LaunchedEffect(pro, proRanges, camera) {
+        val cam = camera ?: return@LaunchedEffect
+        if (ui.mode == CaptureMode.PRO) {
+            val ctl = androidx.camera.camera2.interop.Camera2CameraControl.from(cam.cameraControl)
+            val b = androidx.camera.camera2.interop.CaptureRequestOptions.Builder()
+            if (pro.iso != null || pro.exposureNs != null) {
+                b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                pro.iso?.let { b.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, it) }
+                pro.exposureNs?.let { b.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, it) }
+            } else {
+                b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            }
+            if (pro.focusDistance != null) {
+                b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, pro.focusDistance!!)
+            } else {
+                b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            }
+            pro.wbMode?.let { b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, it) }
+            ctl.setCaptureRequestOptions(b.build())
+        }
+    }
     LaunchedEffect(ui.zoomRatio) {
         val zoomState = camera?.cameraInfo?.zoomState?.value
         val minZ = zoomState?.minZoomRatio ?: 1f
@@ -345,7 +375,7 @@ fun CameraScreen(
     suspend fun nextFrame(capture: ImageCapture): Pair<ByteArray, Int>? =
         suspendCancellableCoroutine { cont ->
             capture.takePicture(
-                mainExecutor,
+                captureExecutor,
                 object : ImageCapture.OnImageCapturedCallback() {
                     override fun onCaptureSuccess(image: ImageProxy) {
                         val bytes: ByteArray? = imageToJpegBytes(image)
@@ -360,6 +390,9 @@ fun CameraScreen(
                 },
             )
         }
+
+    suspend fun nextFrameSafe(capture: ImageCapture, timeoutMs: Long = 20_000): Pair<ByteArray, Int>? =
+        withTimeoutOrNull(timeoutMs) { nextFrame(capture) }
 
     fun haptic() {
         if (appSettings.hapticFeedback) {
@@ -411,10 +444,10 @@ fun CameraScreen(
         haptic()
         applyFlash(capture)
         capture.takePicture(
-            mainExecutor,
+            captureExecutor,
             object : ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
-                    val bytes: ByteArray? = imageToJpegBytes(image)
+                    val bytes = imageToJpegBytes(image)
                     try { image.close() } catch (_: Throwable) { }
                     val uri = bytes?.let {
                         when {
@@ -424,11 +457,11 @@ fun CameraScreen(
                             else -> viewModel.saveJpeg(it)
                         }
                     }
-                    viewModel.onSaved(uri)
+                    view.post { viewModel.onSaved(uri) }
                 }
 
                 override fun onError(exception: ImageCaptureException) {
-                    viewModel.onCaptureError(exception.cause ?: exception)
+                    view.post { viewModel.onCaptureError(exception.cause ?: exception) }
                 }
             },
         )
@@ -469,9 +502,17 @@ fun CameraScreen(
                 }
 
                 val isHdr = ui.mode == CaptureMode.HDR
-                val pipeline = NightStackPipeline(maxSide = 2048) { w, h ->
+                val memClass = (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).memoryClass
+                val maxSide = when {
+                    memClass >= 384 -> 4032
+                    memClass >= 256 -> 3072
+                    else -> 2048
+                }
+                val pipeline = NightStackPipeline(maxSide = maxSide) { w, h ->
                     if (isHdr) HdrMerger(w, h) else FrameMerger(w, h)
                 }
+
+                val frameTimeoutMs = if (ui.mode == CaptureMode.STARS) 40_000L else 20_000L
 
                 if (isHdr) {
                     // EV bracketing -2/0/+2 via exposure compensation, reset afterwards.
@@ -480,8 +521,18 @@ fun CameraScreen(
                         exposure.exposureCompensationStep.toFloat() > 0f
                     ) listOf(-2f, 0f, 2f) else listOf(0f)
                     var processed = 0
+                    var failures = 0
                     for (ev in evOffsets) {
                         if (viewModel.burstCancelled()) break
+                        when (viewModel.thermalState()) {
+                            ThermalGuardian.State.CRITICAL -> {
+                                snackbar.showSnackbar("Temperatura alta: captura detenida, se guarda lo capturado")
+                                break
+                            }
+                            ThermalGuardian.State.HOT -> delay(3_000)
+                            ThermalGuardian.State.WARM -> delay(1_000)
+                            else -> Unit
+                        }
                         val idx = if (exposure != null && evOffsets.size > 1) {
                             (ev / exposure.exposureCompensationStep.toFloat()).roundToInt()
                                 .coerceIn(
@@ -491,7 +542,11 @@ fun CameraScreen(
                         } else 0
                         camera?.cameraControl?.setExposureCompensationIndex(idx)
                         delay(350) // settle before the shot
-                        val frame = nextFrame(burstCapture) ?: continue
+                        val frame = nextFrameSafe(burstCapture, frameTimeoutMs)
+                        if (frame == null) {
+                            if (++failures >= 3) break else continue
+                        }
+                        failures = 0
                         withContext(Dispatchers.Default) { pipeline.addJpeg(frame.first, frame.second) }
                         processed++
                         viewModel.onBurstFrame(processed)
@@ -499,9 +554,23 @@ fun CameraScreen(
                     camera?.cameraControl?.setExposureCompensationIndex(0)
                 } else {
                     var processed = 0
+                    var failures = 0
                     for (i in 1..total) {
                         if (viewModel.burstCancelled()) break
-                        val frame = nextFrame(burstCapture) ?: continue
+                        when (viewModel.thermalState()) {
+                            ThermalGuardian.State.CRITICAL -> {
+                                snackbar.showSnackbar("Temperatura alta: captura detenida, se guarda lo capturado")
+                                break
+                            }
+                            ThermalGuardian.State.HOT -> delay(3_000)
+                            ThermalGuardian.State.WARM -> delay(1_000)
+                            else -> Unit
+                        }
+                        val frame = nextFrameSafe(burstCapture, frameTimeoutMs)
+                        if (frame == null) {
+                            if (++failures >= 3) break else continue
+                        }
+                        failures = 0
                         withContext(Dispatchers.Default) { pipeline.addJpeg(frame.first, frame.second) }
                         processed++
                         viewModel.onBurstFrame(processed)
@@ -529,6 +598,11 @@ fun CameraScreen(
                     )
                     uri?.let { viewModel.onSaved(it) }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                viewModel.onCaptureError(e)
+                snackbar.showSnackbar("Memoria insuficiente: reduce el tamaño del apilado")
             } catch (t: Throwable) {
                 viewModel.onCaptureError(t)
             } finally {
@@ -551,9 +625,18 @@ fun CameraScreen(
                 val capture = imageCapture ?: buildImageCapture(CaptureMode.PANORAMA)
                 val frames = mutableListOf<Pair<IntArray, Pair<Int, Int>>>()
                 var last: Pair<IntArray, Pair<Int, Int>>? = null
+                var failures = 0
                 for (i in 1..total) {
                     if (viewModel.panoCancelled()) break
-                    val frame = nextFrame(capture) ?: continue
+                    if (viewModel.thermalState() == ThermalGuardian.State.CRITICAL) {
+                        snackbar.showSnackbar("Temperatura alta: panorámica detenida, procesando fotos capturadas")
+                        break
+                    }
+                    val frame = nextFrameSafe(capture, 20_000L)
+                    if (frame == null) {
+                        if (++failures >= 3) break else continue
+                    }
+                    failures = 0
                     val decoded = withContext(Dispatchers.Default) {
                         decodeScaled(frame.first, frame.second, maxSide = 1280)
                     }
@@ -592,6 +675,11 @@ fun CameraScreen(
                     )
                     uri?.let { viewModel.onSaved(it) }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                viewModel.onCaptureError(e)
+                snackbar.showSnackbar("Memoria insuficiente para generar la panorámica")
             } catch (t: Throwable) {
                 viewModel.onCaptureError(t)
             } finally {
@@ -652,6 +740,11 @@ fun CameraScreen(
     LaunchedEffect(video.recording) {
         while (video.recording) {
             delay(1000)
+            if (viewModel.thermalState() == ThermalGuardian.State.CRITICAL) {
+                snackbar.showSnackbar("Temperatura crítica: grabación detenida por seguridad")
+                stopVideo()
+                break
+            }
             viewModel.videoTick()
         }
     }

@@ -3,9 +3,13 @@ package com.xperiaprocam.presentation.camera
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.xperiaprocam.core.thermal.ThermalGuardian
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
 import com.xperiaprocam.data.settings.SettingsRepository
 import com.xperiaprocam.data.status.BatteryStatus
 import com.xperiaprocam.data.storage.MediaStoreSaver
+import com.xperiaprocam.data.camera.ProControlsResolver
 import com.xperiaprocam.domain.model.AppSettings
 import com.xperiaprocam.domain.model.CaptureMode
 import com.xperiaprocam.domain.model.FileNameGenerator
@@ -70,7 +74,10 @@ class CameraViewModel @Inject constructor(
     private val saver: MediaStoreSaver,
     private val settings: SettingsRepository,
     private val battery: BatteryStatus,
+    private val thermal: ThermalGuardian,
 ) : ViewModel() {
+
+    fun thermalState() = thermal.state()
 
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState
@@ -116,9 +123,29 @@ class CameraViewModel @Inject constructor(
 
     // --- Pro controls -----------------------------------------------------
 
-    fun setProIso(v: Int?) { _proState.value = _proState.value.copy(iso = v?.coerceIn(50, 12800)) }
-    fun setProExposure(ns: Long?) { _proState.value = _proState.value.copy(exposureNs = ns) }
-    fun setProFocus(d: Float?) { _proState.value = _proState.value.copy(focusDistance = d?.coerceIn(0f, 20f)) }
+    fun setProIso(v: Int?, ranges: ProControlsResolver.ProRanges? = null) {
+        val clamped = if (v != null && ranges?.isoRange != null) {
+            v.coerceIn(ranges.isoRange.first, ranges.isoRange.last)
+        } else {
+            v?.coerceIn(50, 12800)
+        }
+        _proState.value = _proState.value.copy(iso = clamped)
+    }
+
+    fun setProExposure(ns: Long?, ranges: ProControlsResolver.ProRanges? = null) {
+        val clamped = if (ns != null && ranges?.exposureNsRange != null) {
+            ns.coerceIn(ranges.exposureNsRange.first, ranges.exposureNsRange.last)
+        } else {
+            ns
+        }
+        _proState.value = _proState.value.copy(exposureNs = clamped)
+    }
+
+    fun setProFocus(d: Float?, ranges: ProControlsResolver.ProRanges? = null) {
+        val maxFocus = ranges?.minFocusDistance ?: 20f
+        _proState.value = _proState.value.copy(focusDistance = d?.coerceIn(0f, maxFocus))
+    }
+
     fun setProWb(mode: Int?) { _proState.value = _proState.value.copy(wbMode = mode) }
     fun resetPro() { _proState.value = ProUiState() }
 
@@ -234,11 +261,14 @@ class CameraViewModel @Inject constructor(
     }
 
     fun onCaptureError(t: Throwable?) {
-        _uiState.value = _uiState.value.copy(
-            isCapturing = false,
-            countdownRemaining = 0,
-            message = "Error al capturar: ${t?.let { it.javaClass.simpleName } ?: "desconocido"}",
-        )
+        val msg = when ((t as? ImageCaptureException)?.imageCaptureError) {
+            ImageCapture.ERROR_CAMERA_CLOSED -> "La cámara se cerró. Inténtalo de nuevo."
+            ImageCapture.ERROR_CAPTURE_FAILED -> "Falló la captura. Revisa luz y enfoque."
+            ImageCapture.ERROR_FILE_IO -> "No se pudo guardar. Revisa el espacio disponible."
+            ImageCapture.ERROR_INVALID_CAMERA -> "Cámara no disponible."
+            else -> "Error al capturar (${t?.javaClass?.simpleName ?: "desconocido"})"
+        }
+        _uiState.value = _uiState.value.copy(isCapturing = false, countdownRemaining = 0, message = msg)
     }
 
     fun consumeMessage() {

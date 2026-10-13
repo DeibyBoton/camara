@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2 (2026-10-12)
+
+### Corregido y Optimizado
+
+- **FrameAligner SAD Normalizado y Luma**: Suma de diferencias absolutas (SAD) ahora normalizada por número de píxeles comparados, exigiendo un solapamiento mínimo del 50% para evitar desplazamientos artificiales extremos en cielos oscuros o escenas uniformes. Búsqueda directa sobre plano de luminancia en imágenes pequeñas.
+- **FrameMerger con Rechazo de Fantasmas**: Reducción de huella de memoria reemplazando acumuladores por `IntArray` y `ByteArray`. Detección y descarte de píxeles de objetos en movimiento (`ghostThreshold = 96`) para eliminar estelas en apilados.
+- **Subprocesamiento Fuera del Hilo Principal**: Captura y procesamiento ejecutados en `captureExecutor` en segundo plano, evitando bloqueos en la interfaz (cero ANR).
+- **Pro sin Rebind**: Modificaciones de parámetros manuales Pro (ISO, velocidad de obturación, balance de blancos, enfoque manual) aplicadas en caliente vía `Camera2CameraControl.setCaptureRequestOptions` sin reiniciar la sesión de cámara ni parpadear el preview.
+- **Guardián Térmico (`ThermalGuardian`)**: Monitoreo en tiempo real del estado térmico del sistema (`PowerManager`) y temperatura de batería (`BatteryManager`). Detiene y resguarda ráfagas/panorámicas o detiene grabaciones de video de manera segura en estado `CRITICAL`.
+- **Manejo Robusto de Excepciones y Timeouts**: `nextFrameSafe` con timeout y corte tras 3 fallos consecutivos; preservación de `CancellationException`; mensajes descriptivos de error al usuario.
+- **Resolución Dinámica de Apilado (`maxSide`)**: Límite de apilado adaptativo (hasta 4032 px según `memoryClass`), con `android:largeHeap="true"` activado.
+- **Actualización a CameraX 1.5.0**: Soporte actualizado para CameraX 1.5 estable y pipeline de CI en GitHub Actions (`.github/workflows/android.yml`).
+
 ## 0.3.1 (2026-10-12)
 
 ### Añadido y Mejorado

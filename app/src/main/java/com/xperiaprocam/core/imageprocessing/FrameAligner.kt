@@ -24,7 +24,9 @@ class FrameAligner(
     fun findShift(ref: IntArray, frame: IntArray, width: Int, height: Int): Shift {
         require(ref.size == width * height && frame.size == width * height)
         if (width <= workingWidth) {
-            return searchShift(ref, frame, width, height, dxRadius = 4, dyRadius = 4, scale = 1f)
+            val refL = IntArray(ref.size) { luma(ref[it]) }
+            val frameL = IntArray(frame.size) { luma(frame[it]) }
+            return searchShift(refL, frameL, width, height, dxRadius = 4, dyRadius = 4, scale = 1f)
         }
         val scale = workingWidth.toFloat() / width
         val sw = workingWidth
@@ -70,19 +72,16 @@ class FrameAligner(
         val y1 = min(h, h - dy)
         val x0 = max(0, -dx)
         val x1 = min(w, w - dx)
-        var y = y0
-        while (y < y1) {
+        for (y in y0 until y1) {
             val rowRef = y * w
             val rowFrame = (y + dy) * w
-            var x = x0
-            while (x < x1) {
+            for (x in x0 until x1) {
                 sum += kotlin.math.abs(ref[rowRef + x] - frame[rowFrame + x + dx])
                 n++
-                x++
             }
-            y++
         }
-        return if (n == 0) Long.MAX_VALUE else sum
+        if (n < (w * h) / 2) return Long.MAX_VALUE
+        return (sum * 1000L) / n
     }
 
     private fun downsampleLuma(src: IntArray, w: Int, h: Int, sw: Int, sh: Int): IntArray {
